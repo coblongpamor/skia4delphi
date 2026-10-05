@@ -17,6 +17,7 @@ interface
 uses
   { Delphi }
   System.SysUtils,
+  System.UITypes,
   DUnitX.TestFramework,
 
   { Skia }
@@ -30,6 +31,8 @@ type
 
   [TestFixture]
   TSkSvgDOMTests = class(TTestBase)
+  private
+    function ColorAt(const ASvgContent: string; const AX, AY: Integer): TAlphaColor;
   public
     [TestCase('Editing android eyes color', 'android.svg,100,100,eyes,fill,red,/8PDgYHD5/////Phw8fv////9+XHz//////////f///wD9AbwAPAA8ADwAPwD/AP/b/9v/2///8')]
     procedure TestEditSvgElement(const ASvgFileName: string; const AWidth, AHeight: Integer; const AElementId, AAttributeName, AAttributeValue, AExpectedImageHash: string);
@@ -55,6 +58,22 @@ type
     [TestCase('tesla.svg',        'tesla.svg,false,0,0,0,0')]
     [TestCase('youtube.svg',      'youtube.svg,true,0,0,24,24')]
     procedure TestTryGetViewBox(const ASvgFileName: string; const AExpectedResult: Boolean; const AX, AY, AWidth, AHeight: Single);
+    [Test]
+    procedure TestUseOpacityInMask;
+    [Test]
+    procedure TestUseOpacityOnFill;
+    [Test]
+    procedure TestUseOpacityOnFillAndStroke;
+    [Test]
+    procedure TestUseOpacityOnGroup;
+    [Test]
+    procedure TestUseOpacityOnNestedUse;
+    [Test]
+    procedure TestUseOpacityOnReferencedFill;
+    [Test]
+    procedure TestUseOpacityOnReferencedStroke;
+    [Test]
+    procedure TestUseOpacityOnStroke;
   end;
 
 implementation
@@ -63,12 +82,27 @@ uses
   { Delphi }
   System.Classes,
   System.Types,
-  System.UITypes,
   System.IOUtils,
   System.Math,
   System.Math.Vectors;
 
 { TSkSvgDOMTests }
+
+function TSkSvgDOMTests.ColorAt(const ASvgContent: string; const AX,
+  AY: Integer): TAlphaColor;
+var
+  LSurface: ISkSurface;
+  LSVGDOM: ISkSVGDOM;
+begin
+  LSVGDOM := TSkSVGDOM.Make('<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="100" height="100">' +
+    ASvgContent + '</svg>');
+  Assert.IsNotNull(LSVGDOM, 'Invalid SkSVGDOM');
+  LSurface := TSkSurface.MakeRaster(100, 100);
+  Assert.IsNotNull(LSurface, 'Invalid ISkSurface (nil)');
+  LSurface.Canvas.Clear(TAlphaColors.Null);
+  LSVGDOM.Render(LSurface.Canvas);
+  Result := LSurface.PeekPixels.Colors[AX, AY];
+end;
 
 procedure TSkSvgDOMTests.TestEditSvgElement(const ASvgFileName: string;
   const AWidth, AHeight: Integer; const AElementId, AAttributeName,
@@ -178,6 +212,65 @@ begin
     Assert.AreEqual(AWidth, LViewBox.Width, TEpsilon.Vector, 'Different width');
     Assert.AreEqual(AHeight, LViewBox.Height, TEpsilon.Vector, 'Different height');
   end;
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityInMask;
+begin
+  Assert.AreSameColor($80FF0000, ColorAt(
+    '<defs><rect id="r" width="100" height="100"/>' +
+    '<mask id="m"><use xlink:href="#r" fill="white" opacity="0.5"/></mask></defs>' +
+    '<rect width="100" height="100" fill="red" mask="url(#m)"/>', 50, 50), 2);
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnFill;
+begin
+  Assert.AreSameColor($80FF0000, ColorAt(
+    '<defs><rect id="r" width="100" height="100"/></defs>' +
+    '<use xlink:href="#r" fill="red" opacity="0.5"/>', 50, 50), 2);
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnFillAndStroke;
+begin
+  // The opacity applies to the fill and stroke as a group, so the stroke hides the fill under it.
+  Assert.AreSameColor($800000FF, ColorAt(
+    '<defs><rect id="r" x="20" y="20" width="60" height="60"/></defs>' +
+    '<use xlink:href="#r" fill="red" stroke="blue" stroke-width="20" opacity="0.5"/>', 25, 50), 2);
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnGroup;
+begin
+  Assert.AreSameColor($80FF0000, ColorAt(
+    '<defs><g id="g" fill="red"><rect width="60" height="100"/><rect x="40" width="60" height="100"/></g></defs>' +
+    '<use xlink:href="#g" opacity="0.5"/>', 50, 50), 2, 'The overlap of the group children');
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnNestedUse;
+begin
+  Assert.AreSameColor($40FF0000, ColorAt(
+    '<defs><rect id="r" width="100" height="100"/><use id="u" xlink:href="#r" fill="red" opacity="0.5"/></defs>' +
+    '<use xlink:href="#u" opacity="0.5"/>', 50, 50), 2);
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnReferencedFill;
+begin
+  Assert.AreSameColor($80FF0000, ColorAt(
+    '<defs><rect id="r" width="100" height="100" fill="red"/></defs>' +
+    '<use xlink:href="#r" opacity="0.5"/>', 50, 50), 2);
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnReferencedStroke;
+begin
+  // The referenced stroke is invisible to the <use>, which still has to group it with its fill.
+  Assert.AreSameColor($800000FF, ColorAt(
+    '<defs><rect id="r" x="20" y="20" width="60" height="60" stroke="blue" stroke-width="20"/></defs>' +
+    '<use xlink:href="#r" fill="red" opacity="0.5"/>', 25, 50), 2);
+end;
+
+procedure TSkSvgDOMTests.TestUseOpacityOnStroke;
+begin
+  Assert.AreSameColor($80FF0000, ColorAt(
+    '<defs><path id="p" d="M0 50 H100"/></defs>' +
+    '<use xlink:href="#p" fill="none" stroke="red" stroke-width="20" opacity="0.5"/>', 50, 50), 2);
 end;
 
 initialization
